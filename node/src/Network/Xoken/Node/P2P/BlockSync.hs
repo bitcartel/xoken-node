@@ -237,18 +237,18 @@ runPeerSync =
         if L.length connPeers < 16
             then do
                 liftIO $
-                  mapConcurrently_
-                    (\(_, pr) ->
-                         case (bpSocket pr) of
-                             Just s -> do
-                                 let em = runPut . putMessage net $ (MGetAddr)
-                                 debug lg $ LG.msg ("sending GetAddr to " ++ show pr)
-                                 res <- liftIO $ try $ sendEncMessage (bpWriteMsgLock pr) s (BSL.fromStrict em)
-                                 case res of
-                                     Right () -> liftIO $ threadDelay (120 * 1000000)
-                                     Left (e :: SomeException) -> err lg $ LG.msg ("[ERROR] runPeerSync " ++ show e)
-                             Nothing -> err lg $ LG.msg $ val "Error sending, no connections available")
-                    (connPeers)
+                    mapConcurrently_
+                        (\(_, pr) ->
+                             case (bpSocket pr) of
+                                 Just s -> do
+                                     let em = runPut . putMessage net $ (MGetAddr)
+                                     debug lg $ LG.msg ("sending GetAddr to " ++ show pr)
+                                     res <- liftIO $ try $ sendEncMessage (bpWriteMsgLock pr) s (BSL.fromStrict em)
+                                     case res of
+                                         Right () -> liftIO $ threadDelay (120 * 1000000)
+                                         Left (e :: SomeException) -> err lg $ LG.msg ("[ERROR] runPeerSync " ++ show e)
+                                 Nothing -> err lg $ LG.msg $ val "Error sending, no connections available")
+                        (connPeers)
             else liftIO $ threadDelay (120 * 1000000)
 
 markBestSyncedBlock :: (HasLogger m, MonadIO m) => Text -> Int32 -> Q.ClientState -> m ()
@@ -480,7 +480,8 @@ processConfTransaction tx bhash txind blkht = do
                 (txOut tx)
                 [0 :: Int32 ..]
     lookupInAddrs <-
-        mapM
+        liftIO $
+        mapConcurrently
             (\(a, b, c) ->
                  case a of
                      Just a -> return $ Just (a, b, c)
@@ -562,7 +563,7 @@ getAddressFromOutpoint conn lg net outPoint = do
             err lg $ LG.msg ("Error: getAddressFromOutpoint: " ++ show e)
             throw e
         Right (iop) -> do
-            if L.length iop == 0
+            if L.null iop
                 then do
                     debug lg $ LG.msg ("(retry) TxID not found: " ++ (show $ txHashToHex $ outPointHash outPoint))
                     liftIO $ threadDelay (1000000 * 1)

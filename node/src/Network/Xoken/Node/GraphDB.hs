@@ -117,9 +117,7 @@ queryAllegoryNameBranch name isProducer = do
   where
     cypher =
         " MATCH p=(pointer:namestate {name: {namestr}})-[:REVISION]-()-[:INPUT*]->(start:nutxo) " <>
-        " WHERE NOT (start)-[:INPUT]->() " <>
-        " UNWIND tail(nodes(p)) AS elem " <>
-        " RETURN elem.outpoint as outpoint "
+        " WHERE NOT (start)-[:INPUT]->() " <> " UNWIND tail(nodes(p)) AS elem " <> " RETURN elem.outpoint as outpoint "
     params =
         if isProducer
             then fromList [("namestr", T (name <> pack "|producer"))]
@@ -134,9 +132,7 @@ queryAllegoryNameBranchScriptOp name isProducer = do
   where
     cypher =
         " MATCH p=(pointer:namestate {name: {namestr}})-[:REVISION]-()-[:INPUT*]->(start:nutxo) " <>
-        " WHERE NOT (start)-[:INPUT]->() " <>
-        " UNWIND tail(nodes(p)) AS elem " <>
-        " RETURN elem.outpoint as outpoint "
+        " WHERE NOT (start)-[:INPUT]->() " <> " UNWIND tail(nodes(p)) AS elem " <> " RETURN elem.outpoint as outpoint "
     params =
         if isProducer
             then fromList [("namestr", T (name <> pack "|producer"))]
@@ -405,8 +401,8 @@ insertMerkleSubTree leaves inodes = do
                      (var $ node $ leaves !! 0)
                      (replace ("<s>") (var $ node $ leaves !! 0) (pack siblingRelnTempl))
     cyCreate =
-        if length leaves > 0
-            then if length inodes > 0
+        if not $ Prelude.null leaves
+            then if not $ Prelude.null inodes
                      then Data.Text.intercalate (" , ") $
                           Data.List.filter
                               (not . Data.Text.null)
@@ -416,9 +412,7 @@ insertMerkleSubTree leaves inodes = do
             else cyCreateT
     parCreateLeaves = Prelude.map (\(i, x) -> (i, T $ txtTx $ node x)) (zip (vars $ Prelude.map (node) leaves) leaves)
     parCreateSiblingReln =
-        Prelude.map
-            (\(i, x) -> (i, T $ txtTx $ node x))
-            (zip (vars $ Prelude.map (node) leaves) (leaves ++ reverse leaves))
+        Prelude.map (\(i, x) -> (i, T $ txtTx $ node x)) (zip (vars $ Prelude.map (node) leaves) (leaves))
     parCreateArr =
         Prelude.map
             (\(i, j, k, x) -> [(i, T $ txtTx $ node x), (j, T $ txtTx $ leftChild x), (k, T $ txtTx $ rightChild x)])
@@ -426,15 +420,15 @@ insertMerkleSubTree leaves inodes = do
     parCreate = Prelude.concat parCreateArr
     params =
         fromList $
-        if length leaves > 0
+        if not $ Prelude.null leaves
             then parCreateLeaves <> parCreate <> parCreateSiblingReln
             else parCreate
     cypher =
-        if length matchReq == 0
+        if Prelude.null matchReq
             then " CREATE " <> cyCreate
             else " MATCH " <> cyMatch <> " CREATE " <> cyCreate
     txtTx i = txHashToHex $ TxHash $ fromJust i
-    vars m = Prelude.map (\x -> Data.Text.filter (isAlpha) $ numrepl $ Data.Text.take 8 $ txtTx x) (m)
+    vars m = Prelude.map var (m)
     var m = Data.Text.filter (isAlpha) $ numrepl $ Data.Text.take 8 $ txtTx m
     numrepl txt =
         Data.Text.map
