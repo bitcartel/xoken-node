@@ -25,6 +25,7 @@ import Control.Concurrent.STM.TQueue
 import Control.Concurrent.STM.TSem
 import Control.Concurrent.STM.TVar
 import Control.Exception
+import qualified Control.Exception.Extra as EX
 import qualified Control.Exception.Lifted as LE (try)
 import Control.Monad.Logger
 import Control.Monad.Loops
@@ -342,23 +343,25 @@ hashPair :: Hash256 -> Hash256 -> Hash256
 hashPair a b = doubleSHA256 $ encode a `B.append` encode b
 
 pushHash :: HashCompute -> Hash256 -> Maybe Hash256 -> Maybe Hash256 -> Int8 -> Int8 -> Bool -> HashCompute
-pushHash (stateMap, res) nhash left right ht !ind final =
+pushHash (stateMap, res) nhash left right ht ind final =
     case node prev of
         Just pv ->
-            pushHash
-                ( (M.insert ind emptyMerkleNode stateMap)
-                , (insertSpecial
-                       (Just pv)
-                       (left)
-                       (right)
-                       True
-                       (insertSpecial (Just nhash) (leftChild prev) (rightChild prev) False res)))
-                (hashPair pv nhash)
-                (Just pv)
-                (Just nhash)
-                ht
-                (ind + 1)
-                final
+            if ind < ht
+                then pushHash
+                         ( (M.insert ind emptyMerkleNode stateMap)
+                         , (insertSpecial
+                                (Just pv)
+                                (left)
+                                (right)
+                                True
+                                (insertSpecial (Just nhash) (leftChild prev) (rightChild prev) False res)))
+                         (hashPair pv nhash)
+                         (Just pv)
+                         (Just nhash)
+                         ht
+                         (ind + 1)
+                         final
+                else throw MerkleTreeInvalidException -- Fatal error, can only happen in case of invalid leaf nodes
         Nothing ->
             if ht == ind
                 then (updateState, (insertSpecial (Just nhash) left right True res))
@@ -381,76 +384,74 @@ pushHash (stateMap, res) nhash left right ht !ind final =
             Nothing -> emptyMerkleNode
 
 updateMerkleSubTrees ::
-       (HasDatabaseHandles m, MonadBaseControl IO m, HasLogger m, MonadIO m)
-    => HashCompute
+       DatabaseHandles
+    -> HashCompute
     -> Hash256
     -> Maybe Hash256
     -> Maybe Hash256
     -> Int8
     -> Int8
     -> Bool
-    -> m (HashCompute)
-updateMerkleSubTrees hashMap newhash left right ht ind final = do
-    dbe <- getDB
-    lg <- getLogger
-    let (state, res) = pushHash hashMap newhash left right ht ind final
-    if not $ L.null res
-        then do
-            let (create, match) =
-                    L.partition
-                        (\x ->
-                             case x of
-                                 (MerkleNode sib lft rht _) ->
-                                     if isJust sib && isJust lft && isJust rht
-                                         then False
-                                         else if isJust sib
-                                                  then True
-                                                  else throw MerkleTreeComputeException)
-                        (res)
-            let finMatch =
-                    L.sortBy
-                        (\x y ->
-                             if (leftChild x == node y) || (rightChild x == node y)
-                                 then GT
-                                 else LT)
-                        match
-            -- debug lg $ msg $ show create ++ show finMatch
-            if L.length create == 1 && L.null finMatch
-                then return (state, [])
-                else do
-                    debug lg $ msg ("about to insertMerkleSubTree" ++ show newhash)
-                    ores <-
-                        LA.race
-                            (liftIO $
-                             try $ tryWithResource (pool $ graphDB dbe) (`BT.run` insertMerkleSubTree create finMatch))
-                            (liftIO $ threadDelay (30 * 1000000))
-                    case ores of
-                        Right () -> do
-                            debug lg $ msg (" ########## INSERT TIMEOUT ########### " ++ show newhash)
-                            throw MerkleSubTreeDBInsertException
-                        Left res -> do
-                            case res of
-                                Right rt -> do
-                                    case rt of
-                                        Just r -> do
-                                            debug lg $ msg ("insert success " ++ show newhash)
-                                            return (state, [])
-                                        Nothing -> do
-                                            err lg $ msg ("Unable to fetch resource from pool" ++ show newhash)
-                                            throw MerkleSubTreeDBInsertException
-                                Left (e :: SomeException) -> do
-                                    if T.isInfixOf (T.pack "ConstraintValidationFailed") (T.pack $ show e)
-                                        then do
-                                            debug lg $
-                                                msg
-                                                    ("Ignoring ConstraintValidationFailed, prev aborted block sync?" ++
-                                                     show newhash)
-                                            return (state, [])
-                                        else do
-                                            err lg $ msg $ show e
-                                            throw MerkleSubTreeDBInsertException
-        else return (state, res)
-        -- else block --
+    -> IO (HashCompute)
+updateMerkleSubTrees dbe hashComp newhash left right ht ind final = do
+    eres <- try $ return $ pushHash hashComp newhash left right ht ind final
+    case eres of
+        Left MerkleTreeInvalidException -> do
+            print (" PushHash Invalid Merkle Leaves exception")
+            throw MerkleSubTreeDBInsertException
+        Right (state, res) -- = pushHash hashComp newhash left right ht ind final
+         -> do
+            if not $ L.null res
+                then do
+                    let (create, match) =
+                            L.partition
+                                (\x ->
+                                     case x of
+                                         (MerkleNode sib lft rht _) ->
+                                             if isJust sib && isJust lft && isJust rht
+                                                 then False
+                                                 else if isJust sib
+                                                          then True
+                                                          else throw MerkleTreeComputeException)
+                                (res)
+                    let finMatch =
+                            L.sortBy
+                                (\x y ->
+                                     if (leftChild x == node y) || (rightChild x == node y)
+                                         then GT
+                                         else LT)
+                                match
+                    if L.length create == 1 && L.null finMatch
+                        then return (state, [])
+                        else do
+                            ores <-
+                                LA.race
+                                    (liftIO $
+                                     try $
+                                     tryWithResource (pool $ graphDB dbe) (`BT.run` insertMerkleSubTree create finMatch))
+                                    (liftIO $ threadDelay (30 * 1000000))
+                            case ores of
+                                Right () -> do
+                                    throw DBInsertTimeOutException
+                                Left res -> do
+                                    case res of
+                                        Right rt -> do
+                                            case rt of
+                                                Just r -> do
+                                                    return (state, [])
+                                                Nothing -> do
+                                                    liftIO $ threadDelay (1000000 * 2) -- time to recover
+                                                    throw ResourcePoolFetchException
+                                        Left (e :: SomeException) -> do
+                                            if T.isInfixOf (T.pack "ConstraintValidationFailed") (T.pack $ show e)
+                                                        -- not considered an error, could be a previously aborted block being reprocessed.
+                                                then do
+                                                    return (state, [])
+                                                else do
+                                                    liftIO $ threadDelay (1000000 * 2) -- time to recover
+                                                    throw MerkleSubTreeDBInsertException
+                else return (state, res)
+                    -- else block --
 
 resilientRead ::
        (HasLogger m, MonadBaseControl IO m, MonadIO m)
@@ -496,22 +497,39 @@ merkleTreeBuilder ::
 merkleTreeBuilder tque blockHash treeHt = do
     p2pEnv <- getBitcoinP2P
     lg <- getLogger
+    dbe <- getDB
     continue <- liftIO $ newIORef True
     tv <- liftIO $ atomically $ newTVar (M.empty, [])
     whileM_ (liftIO $ readIORef continue) $ do
-        val <- liftIO $ atomically $ readTVar tv
-        (txh, isLast) <- liftIO $ atomically $ readTQueue tque
-        res <- LE.try $ updateMerkleSubTrees (val) (getTxHash txh) Nothing Nothing (treeHt) (0) (isLast)
-        case res of
-            Left (e :: SomeException) -> do
-                err lg $ LG.msg ("[ERROR] ######### updateMerkleSubTrees ######### " ++ show e)
-                throw e
-            Right (hc) -> do
-                liftIO $ atomically $ writeTVar tv hc
-                --debug lg $ msg ("updateMerkleSubTrees returned " ++ (show $ txh))
-        when isLast $ do
-            liftIO $ writeIORef continue False
-            liftIO $ atomically $ modifyTVar' (merkleQueueMap p2pEnv) (M.delete blockHash)
+        hcstate <- liftIO $ readTVarIO tv
+        ores <- LA.race (liftIO $ threadDelay (1000000 * 60)) (liftIO $ atomically $ readTQueue tque)
+        case ores of
+            Left ()
+                    -- likely the peer conn terminated, just end this thread
+                    -- do NOT delete queue as another peer connection could have establised meanwhile
+             -> do
+                liftIO $ writeIORef continue False
+            Right (txh, isLast) -> do
+                res <-
+                    liftIO $
+                    try $
+                    liftIO $
+                    EX.retry 5 $ updateMerkleSubTrees dbe hcstate (getTxHash txh) Nothing Nothing treeHt 0 isLast
+                case res of
+                    Left (e :: SomeException) -> do
+                        err lg $
+                            LG.msg
+                                ("[ERROR] Quitting Transpose Merkle Tree building for block. FATAL Bug! " ++
+                                 show e ++ show (getTxHash txh) ++ " last:" ++ show isLast)
+                        liftIO $ writeIORef continue False
+                        -- do NOT delete queue here, merely end this thread
+                        throw e
+                    Right (hcs) -> do
+                        liftIO $ atomically $ writeTVar tv hcs
+                        --debug lg $ msg ("updateMerkleSubTrees returned " ++ (show $ txh) ++ show)
+                when isLast $ do
+                    liftIO $ writeIORef continue False
+                    liftIO $ atomically $ modifyTVar' (merkleQueueMap p2pEnv) (M.delete blockHash)
 
 readNextMessage ::
        (HasBitcoinP2P m, HasLogger m, HasDatabaseHandles m, MonadBaseControl IO m, MonadIO m)
@@ -533,9 +551,8 @@ readNextMessage net sock ingss = do
                     qe <-
                         case (issBlockInfo iss) of
                             Just bf ->
-                                case M.lookup (biBlockHash $ bf) mqm of
-                                    Just q -> return q
-                                    Nothing -> do
+                                if (binTxProcessed blin == 0) -- very first Tx
+                                    then do
                                         qq <- liftIO $ atomically $ newTQueue
                                         liftIO $
                                             atomically $
@@ -546,25 +563,12 @@ readNextMessage net sock ingss = do
                                                 (biBlockHash $ bf)
                                                 (computeTreeHeight $ binTxTotalCount blin)
                                         return qq
-                            Nothing -> undefined
+                                    else case M.lookup (biBlockHash $ bf) mqm of
+                                             Just q -> return q
+                                             Nothing -> throw MerkleQueueNotFoundException
+                            Nothing -> throw MessageParsingException
                     let isLast = ((binTxTotalCount blin) == (1 + binTxProcessed blin))
                     liftIO $ atomically $ writeTQueue qe ((txHash t), isLast)
-                    -- res <-
-                    --     LE.try $
-                    --     updateMerkleSubTrees
-                    --         (merklePrevNodesMap iss)
-                    --         (getTxHash $ txHash t)
-                    --         Nothing
-                    --         Nothing
-                    --         (merkleTreeHeight iss)
-                    --         (merkleTreeCurIndex iss)
-                    --         ((binTxTotalCount blin) == (1 + binTxProcessed blin))
-                    -- case res of
-                    --     Left (e :: SomeException) -> do
-                    --         err lg $ LG.msg ("[ERROR] ######### updateMerkleSubTrees ######### " ++ show e)
-                    --         throw e
-                    --     Right (nst) -> do
-                    --         debug lg $ msg ("updateMerkleSubTrees returned " ++ (show $ txHash t))
                     let bio =
                             BlockIngestState
                                 { binUnspentBytes = unused
@@ -853,8 +857,8 @@ readNextMessage' peer = do
                                                         (blockSyncStatusMap bp2pEnv)
                                                         (M.insert (biBlockHash bi) $
                                                          ( RecentTxReceiveTime (tm, binTxProcessed ingst)
-                                                         , biBlockHeight bi) -- track receive progress
-                                                         )
+                                                         , biBlockHeight bi -- track receive progress
+                                                          ))
                                 Nothing -> throw InvalidBlockInfoException
                         otherwise -> throw UnexpectedDuringBlockProcException
                 Nothing -> return ()
