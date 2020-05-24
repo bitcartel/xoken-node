@@ -27,6 +27,7 @@ import Arivi.P2P.ServiceRegistry
 import Control.Arrow
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async.Lifted (async, wait, withAsync)
+import Control.Concurrent.Event as EV
 import Control.Concurrent.MVar
 import Control.Concurrent.QSem
 import Control.Concurrent.STM.TVar
@@ -155,6 +156,8 @@ data ConfigException
 
 instance Exception ConfigException
 
+type HashTable k v = H.BasicHashTable k v
+
 defaultConfig :: FilePath -> IO ()
 defaultConfig path = do
     (sk, _) <- ACUPS.generateKeyPair
@@ -194,47 +197,38 @@ runThreads ::
     -> LG.Logger
     -> (P2PEnv AppM ServiceResource ServiceTopic RPCMessage PubNotifyMessage)
     -> IO ()
-runThreads config nodeConf bp2p conn lg p2pEnv =
-    forever $ do
-        gdbState <- makeGraphDBResPool
-        let dbh = DatabaseHandles conn gdbState
-        let allegoryEnv = AllegoryEnv $ allegoryVendorSecretKey nodeConf
-        let xknEnv = XokenNodeEnv bp2p dbh lg allegoryEnv
-        let serviceEnv = ServiceEnv xknEnv p2pEnv
-        runFileLoggingT (toS $ Config.ariviLogFile config) $
-            runAppM
-                serviceEnv
-                (do initP2P config
-                    liftIO $ print ("begin of loop..")
-                    bp2pEnv <- getBitcoinP2P
-                    liftIO $ tryTakeMVar (fst $ peerReset bp2pEnv)
-                    withAsync runEpochSwitcher $ \a -> do
-                        withAsync setupSeedPeerConnection $ \b -> do
-                            withAsync runEgressChainSync $ \c -> do
-                                withAsync runEgressBlockSync $ \d -> do
-                                    withAsync runPeerSync $ \e -> do
-                                        resetPeers
-                                        liftIO $ print ("exiting..")
-                    liftIO $ print ("end of loop..")
-                    liftIO $ destroyAllResources (pool gdbState)
-                    liftIO $ threadDelay (10 * 1000000))
+runThreads config nodeConf bp2p conn lg p2pEnv = do
+    gdbState <- makeGraphDBResPool
+    let dbh = DatabaseHandles conn gdbState
+    let allegoryEnv = AllegoryEnv $ allegoryVendorSecretKey nodeConf
+    let xknEnv = XokenNodeEnv bp2p dbh lg allegoryEnv
+    let serviceEnv = ServiceEnv xknEnv p2pEnv
+    runFileLoggingT (toS $ Config.logFile config) $
+        runAppM
+            serviceEnv
+            (do initP2P config
+                bp2pEnv <- getBitcoinP2P
+                withAsync runEpochSwitcher $ \a -> do
+                    withAsync setupSeedPeerConnection $ \b -> do
+                        withAsync runEgressChainSync $ \c -> do withAsync runEgressBlockSync $ \d -> do runPeerSync)
 
 runNode :: Config.Config -> NC.NodeConfig -> Q.ClientState -> BitcoinP2P -> AriviNetworkServiceHandler -> IO ()
 runNode config nodeConf conn bp2p ariviHandler = do
+    p2pAriviEnv <- mkP2PEnv config globalHandlerRpcArivi globalHandlerPubSubArivi [AriviSecureRPC] []
+    let serviceEnv = AriviEnv.ServiceEnv AriviEnv.EndPointEnv p2pAriviEnv
+    async
+        (runFileLoggingT (toS $ Config.ariviLogFile config) $
+         AriviEnv.runAppM
+             serviceEnv
+             (do initP2P config
+                 handleNewConnectionRequest ariviHandler))
     p2pEnv <- mkP2PEnv config globalHandlerRpc globalHandlerPubSub [AriviSecureRPC] []
     lg <-
         LG.new
             (LG.setOutput
                  (LG.Path $ T.unpack $ NC.logFileName nodeConf)
                  (LG.setLogLevel (logLevel nodeConf) LG.defSettings))
-    async (runThreads config nodeConf bp2p conn lg p2pEnv)
-    p2pAriviEnv <- mkP2PEnv config globalHandlerRpcArivi globalHandlerPubSubArivi [AriviSecureRPC] []
-    let serviceEnv = AriviEnv.ServiceEnv AriviEnv.EndPointEnv p2pAriviEnv
-    runFileLoggingT (toS $ Config.logFile config) $
-        AriviEnv.runAppM
-            serviceEnv
-            (do initP2P config
-                handleNewConnectionRequest ariviHandler)
+    runThreads config nodeConf bp2p conn lg p2pEnv
 
 data Config =
     Config
@@ -268,7 +262,6 @@ main = do
     unless b (defaultConfig path)
     cnf <- Config.readConfig (path <> "/arivi-config.yaml")
     nodeCnf <- NC.readConfig (path <> "/node-config.yaml")
-    print (show nodeCnf)
     let nodeConfig =
             BitcoinNodeConfig
                 5 -- maximum connected peers allowed
@@ -287,7 +280,8 @@ main = do
     rpf <- newEmptyMVar
     rpc <- newTVarIO 0
     mq <- newTVarIO M.empty
-    let bp2p = BitcoinP2P nodeConfig g bp mv hl st ep tc (NC.indexUnconfirmedTx nodeCnf) (rpf, rpc) mq
+    ts <- newTVarIO M.empty
+    let bp2p = BitcoinP2P nodeConfig g bp mv hl st ep tc (NC.indexUnconfirmedTx nodeCnf) (rpf, rpc) mq ts
     let certFP = path <> "/certificate.cert"
         keyFP = path <> "/key.pem"
         csrFP = path <> "/csr.csr"

@@ -115,6 +115,7 @@ executable xoken-nexa
     , tls
     , x509-store
     , network-simple-tls
+    , concurrent-extra
   default-language: Haskell2010
 
 test-suite xoken-node-test
