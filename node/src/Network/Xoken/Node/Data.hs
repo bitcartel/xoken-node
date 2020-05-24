@@ -203,6 +203,6 @@ data MerkleBranchNode' =
 
 data PubNotifyMessage =
     PubNotifyMessage
-        { psBody :: ByteString
+        { psBody :: String
         }
     deriving (Show, Generic, Eq, Serialise)

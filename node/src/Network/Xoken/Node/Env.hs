@@ -92,7 +92,7 @@ data ServiceEnv m r t rmsg pmsg =
         }
 
 data ServiceResource =
-    AriviService
+    AriviSecureRPC
         {
         }
     deriving (Eq, Ord, Show, Generic)

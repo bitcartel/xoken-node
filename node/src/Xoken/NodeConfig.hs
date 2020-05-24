@@ -30,6 +30,8 @@ data NodeConfig =
         , logFileName :: T.Text
         , indexUnconfirmedTx :: Bool
         , allegoryVendorSecretKey :: SecKey
+        , endPointListenIP :: String
+        , endPointListenPort :: PortNumber
         }
     deriving (Show, Generic)
 

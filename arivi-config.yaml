@@ -1,11 +1,16 @@
 logFile: ./node.log
+ariviLogFile: ./arivi.log
 sbound: 20
-secretKey: 087e9354f247209dcf8e77065b360bdbc62d4821c2b5b11d431ad562bfa39fc6
-trustedPeers: []
+secretKey: 2eb3f292f8244bf645079393a4c6a72fa7dbd6ac43b57eb7c4a327acf4eaa2a2
+trustedPeers:
+- nodeID: a07b8847dc19d77f8ef966ba5a954dac2270779fb028b77829f8ba551fd2f7ab0c73441456b402792c731d8d39c116cb1b4eb3a18a98f4b099a5f9bdffee965c
+  nodeEndPoint:
+    nodeIp: 51.89.40.95
+    udpPort: 5678
+    tcpPort: 5678
 pingThreshold: 5
 kademliaConcurrencyFactor: 3
 udpPort: 5678
 listenIP: 127.0.0.1
 tcpPort: 5678
-myNodeId: f86bec585015d30eed21ac2f774226ad319f68aa68bce1864c23f8ee5f13d3527ce2c731d2d9be36e4f1396bfaa519d3d1f560e2aa9d4183bee2fc6df6ba7a75
-
+myNodeId: 5c1c835fd16167b564f1d6ad9221c722785c54b3cf742121c7b3e4e120076502cae4f23575c217851c3524cd53c15768485c4b9eb65b57063d410788be0c6a78
