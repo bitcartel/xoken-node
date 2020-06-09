@@ -546,22 +546,41 @@ readNextMessage ::
 readNextMessage net sock ingss = do
     p2pEnv <- getBitcoinP2P
     lg <- getLogger
+    dbe <- getDB
     case ingss of
         Just iss -> do
-            let blin = issBlockIngest iss
+            let blin = issBlockIngest iss            
             ((tx, unused), txbytLen) <- resilientRead sock blin
             case tx of
                 Just t -> do
                     debug lg $
                         msg
                             ("Confirmed-Tx: " ++
-                             (show $ txHashToHex $ txHash t) ++ " unused: " ++ show (B.length unused))
+                             (show $ txHashToHex $ txHash t) ++ " unused: " ++ show (B.length unused) )
                     mqm <- liftIO $ readTVarIO $ merkleQueueMap p2pEnv
                     qe <-
                         case (issBlockInfo iss) of
                             Just bf ->
                                 if (binTxProcessed blin == 0) -- very first Tx
                                     then do
+                                        
+                                        let conn = keyValDB $ dbe
+                                        let str = "insert INTO xoken.blockmap ( txid, blockhash) values (?,?)"
+                                        let qstr = str :: Q.QueryString Q.W (T.Text,T.Text) ()
+                                        let par =
+                                             Q.defQueryParams
+                                             Q.One
+                                             ( txHashToHex $ txHash t
+                                             ,blockHashToHex $ biBlockHash       $ bf )
+                                        res <- liftIO $ try $ Q.runClient conn (Q.write (Q.prepared qstr) par)    
+                                       
+                                        case res of
+                                           Right () -> return ()
+                                           Left (e :: SomeException) ->
+                                               err lg $
+                                               LG.msg ("blockhash failed: " ++ show e) >> throw KeyValueDBInsertException
+
+
                                         qq <-
                                             liftIO $
                                             atomically $ newTBQueue $ intToNatural (maxTMTQueueSize $ nodeConfig p2pEnv)
@@ -580,6 +599,7 @@ readNextMessage net sock ingss = do
                                              Just q -> return q
                                              Nothing -> throw MerkleQueueNotFoundException
                             Nothing -> throw MessageParsingException
+                            
                     let isLast = ((binTxTotalCount blin) == (1 + binTxProcessed blin))
                     liftIO $ atomically $ writeTBQueue qe ((txHash t), isLast)
                     let bio =
@@ -602,7 +622,7 @@ readNextMessage net sock ingss = do
                 Left e -> do
                     err lg $ msg ("Error decoding incoming message header: " ++ e)
                     throw MessageParsingException
-                Right (MessageHeader _ cmd len cks) -> do
+                Right (MessageHeader _ cmd len cks) -> do                 
                     if cmd == MCBlock
                         then do
                             byts <- recvAll sock (88) -- 80 byte Block header + VarInt (max 8 bytes) Tx count
@@ -725,7 +745,7 @@ messageHandler peer (mm, ingss) = do
                                      liftIO $ putMVar (bestBlockUpdated bp2pEnv) True -- will trigger a GetHeaders to peers
                                  else if (invType x == InvTx)
                                           then do
-                                              debug lg $ LG.msg ("INV - new Tx: " ++ (show $ invHash x))
+                                              
                                               if (indexUnconfirmedTx $ nodeConfig bp2pEnv) == True
                                                   then processTxGetData peer $ invHash x
                                                   else return ()
@@ -745,11 +765,12 @@ messageHandler peer (mm, ingss) = do
                 MConfTx tx -> do
                     case ingss of
                         Just iss
-                            -- debug lg $ LG.msg $ LG.val ("DEBUG receiving confirmed Tx ")
+                        
                          -> do
                             let bi = issBlockIngest iss
-                            let binfo = issBlockInfo iss
+                            let binfo = issBlockInfo iss    
                             case binfo of
+                                
                                 Just bf -> do
                                     res <-
                                         LE.try $
@@ -786,6 +807,7 @@ messageHandler peer (mm, ingss) = do
                             err lg $ LG.msg $ val ("[???] Unconfirmed Tx ")
                             return $ msgType msg
                 MTx tx -> do
+                   -- debug lg $ LG.msg ("unconform transactions" ++ (show $ tx))
                     processUnconfTransaction tx
                     return $ msgType msg
                 MBlock blk

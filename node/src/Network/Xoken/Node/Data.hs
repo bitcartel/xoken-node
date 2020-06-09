@@ -254,6 +254,7 @@ data BlockRecord =
         { rbHeight :: Int
         , rbHash :: String
         , rbHeader :: BlockHeader
+        , coinbaseTx :: TxRecord
         }
     deriving (Generic, Show, Hashable, Eq, Serialise, ToJSON)
 

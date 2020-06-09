@@ -29,6 +29,13 @@ CREATE TABLE xoken.ep_address_outputs (
     PRIMARY KEY (epoch, address, output)
 ) 
 
+
+CREATE TABLE xoken.blockmap (
+	    blockhash text PRIMARY KEY,
+	    txid text,
+	    txindex int
+)
+
 CREATE TABLE xoken.address_outputs (
     address text,
     output frozen<tuple<text, int>>,

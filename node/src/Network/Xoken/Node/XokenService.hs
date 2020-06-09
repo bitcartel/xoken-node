@@ -78,9 +78,13 @@ data AriviServiceException
     = KeyValueDBLookupException
     | GraphDBLookupException
     | InvalidOutputAddressException
-    deriving (Show)
+    deriving (Show)     
+
+getd :: (Identity DT.Text) -> DT.Text
+getd (Identity a) = a
 
 instance Exception AriviServiceException
+
 
 xGetBlockHash :: (HasXokenNodeEnv env m, MonadIO m) => Network -> String -> m (Maybe BlockRecord)
 xGetBlockHash net hash = do
@@ -95,68 +99,93 @@ xGetBlockHash net hash = do
         else do
             let (hs, ht, hdr) = iop !! 0
             case eitherDecode $ BSL.fromStrict $ DTE.encodeUtf8 hdr of
-                Right bh -> return $ Just $ BlockRecord (fromIntegral ht) (DT.unpack hs) bh
+                Right bh -> do                   
+                   
+                    let str1 = "select txid from xoken.blockmap where blockhash = ?"
+                        qstr1 = str1 :: Q.QueryString Q.R (Identity DT.Text) (Identity DT.Text)
+                        p1 = Q.defQueryParams Q.One (Identity $ DT.pack hash)                          
+                    iopt <- liftIO $ try $ Q.runClient conn (Q.query qstr1 p1)
+                    case iopt of
+                             Right (txi) -> do
+                                    
+                                    tx <- xGetTxHash net (DT.unpack $ getd $ txi !! 0)
+                                    case tx of
+                                      Just RawTxRecord {..} ->
+                                          case S.decodeLazy txSerialized of
+                                              Right rt ->
+                                                  return $ (Just $ BlockRecord (fromIntegral ht) (DT.unpack hs) bh (TxRecord txId txBlockInfo rt))
+                                              Left err -> return $ Nothing
+                             Left (e :: SomeException) -> do
+                                    liftIO $ print $ "Decode failed with error-: " ++ (show e) 
+                                    return Nothing
+
                 Left err -> do
                     liftIO $ print $ "Decode failed with error: " <> show err
                     return Nothing
 
-xGetBlocksHashes :: (HasXokenNodeEnv env m, MonadIO m) => Network -> [String] -> m ([BlockRecord])
-xGetBlocksHashes net hashes = do
-    dbe <- getDB
-    let conn = keyValDB (dbe)
-        str = "SELECT block_hash, block_height, block_header from xoken.blocks_by_hash where block_hash in ?"
-        qstr = str :: Q.QueryString Q.R (Identity [DT.Text]) (DT.Text, Int32, DT.Text)
-        p = Q.defQueryParams Q.One $ Identity $ Data.List.map (DT.pack) hashes
-    iop <- Q.runClient conn (Q.query qstr p)
-    if length iop == 0
-        then return []
-        else do
-            case traverse
-                     (\(hs, ht, hdr) ->
-                          BlockRecord (fromIntegral ht) (DT.unpack hs) <$> (eitherDecode $ BSL.fromStrict $ DTE.encodeUtf8 hdr))
-                     (iop) of
-                Right x -> return x
-                Left err -> do
-                    liftIO $ print $ "decode failed for blockrecord: " <> show err
-                    return []
+--xGetBlocksHashes :: (HasXokenNodeEnv env m, MonadIO m) => Network -> [String] -> m ([BlockRecord])
+--xGetBlocksHashes net hashes = do
+--    dbe <- getDB
+--    let conn = keyValDB (dbe)
+--        str = "SELECT block_hash, block_height, block_header from xoken.blocks_by_hash where block_hash in ?"
+--        qstr = str :: Q.QueryString Q.R (Identity [DT.Text]) (DT.Text, Int32, DT.Text)
+--        p = Q.defQueryParams Q.One $ Identity $ Data.List.map (DT.pack) hashes
+--    iop <- Q.runClient conn (Q.query qstr p)
+--    if length iop == 0
+--        then return []
+--        else do
+            
+--            let str1 = "select txid from xoken.blockmap where blockhash in ?"
+--                qstr1 = str1 :: Q.QueryString Q.R (Identity [DT.Text]) (Identity DT.Text)
+--                p1 = Q.defQueryParams Q.One (Identity $ Data.List.map $ (DT.pack) hashes)                          
+--            iopt <- liftIO $ try $ Q.runClient conn (Q.query qstr1 p1)
+--            case traverse
+--                     (\(hs, ht, hdr) ->
+                       
+--                          BlockRecord (fromIntegral ht) (DT.unpack hs) <$> (eitherDecode $ BSL.fromStrict $ DTE.encodeUtf8 hdr))
+--                     (iop) of
+--                Right x -> return x
+--                Left err -> do
+--                    liftIO $ print $ "decode failed for blockrecord: " <> show err
+--                    return []
 
-xGetBlockHeight :: (HasXokenNodeEnv env m, MonadIO m) => Network -> Int32 -> m (Maybe BlockRecord)
-xGetBlockHeight net height = do
-    dbe <- getDB
-    let conn = keyValDB (dbe)
-        str = "SELECT block_hash, block_height, block_header from xoken.blocks_by_height where block_height = ?"
-        qstr = str :: Q.QueryString Q.R (Identity Int32) (DT.Text, Int32, DT.Text)
-        p = Q.defQueryParams Q.One $ Identity height
-    iop <- Q.runClient conn (Q.query qstr p)
-    if length iop == 0
-        then return Nothing
-        else do
-            let (hs, ht, hdr) = iop !! 0
-            case eitherDecode $ BSL.fromStrict $ DTE.encodeUtf8 hdr of
-                Right bh -> return $ Just $ BlockRecord (fromIntegral ht) (DT.unpack hs) bh
-                Left err -> do
-                    liftIO $ print $ "Decode failed with error: " <> show err
-                    return Nothing
+-- xGetBlockHeight :: (HasXokenNodeEnv env m, MonadIO m) => Network -> Int32 -> m (Maybe BlockRecord)
+-- xGetBlockHeight net height = do
+--     dbe <- getDB
+--     let conn = keyValDB (dbe)
+--         str = "SELECT block_hash, block_height, block_header from xoken.blocks_by_height where block_height = ?"
+--         qstr = str :: Q.QueryString Q.R (Identity Int32) (DT.Text, Int32, DT.Text)
+--         p = Q.defQueryParams Q.One $ Identity height
+--     iop <- Q.runClient conn (Q.query qstr p)
+--     if length iop == 0
+--         then return Nothing
+--         else do
+--             let (hs, ht, hdr) = iop !! 0
+--             case eitherDecode $ BSL.fromStrict $ DTE.encodeUtf8 hdr of
+--                 Right bh -> return $ Just $ BlockRecord (fromIntegral ht) (DT.unpack hs) bh
+--                 Left err -> do
+--                     liftIO $ print $ "Decode failed with error: " <> show err
+--                     return Nothing
 
-xGetBlocksHeights :: (HasXokenNodeEnv env m, MonadIO m) => Network -> [Int32] -> m ([BlockRecord])
-xGetBlocksHeights net heights = do
-    dbe <- getDB
-    let conn = keyValDB (dbe)
-        str = "SELECT block_hash, block_height, block_header from xoken.blocks_by_height where block_height in ?"
-        qstr = str :: Q.QueryString Q.R (Identity [Int32]) (DT.Text, Int32, DT.Text)
-        p = Q.defQueryParams Q.One $ Identity heights
-    iop <- Q.runClient conn (Q.query qstr p)
-    if length iop == 0
-        then return []
-        else do
-            case traverse
-                     (\(hs, ht, hdr) ->
-                          BlockRecord (fromIntegral ht) (DT.unpack hs) <$> (eitherDecode $ BSL.fromStrict $ DTE.encodeUtf8 hdr))
-                     (iop) of
-                Right x -> return x
-                Left err -> do
-                    liftIO $ print $ "decode failed for blockrecord: " <> show err
-                    return []
+-- xGetBlocksHeights :: (HasXokenNodeEnv env m, MonadIO m) => Network -> [Int32] -> m ([BlockRecord])
+-- xGetBlocksHeights net heights = do
+--     dbe <- getDB
+--     let conn = keyValDB (dbe)
+--         str = "SELECT block_hash, block_height, block_header from xoken.blocks_by_height where block_height in ?"
+--         qstr = str :: Q.QueryString Q.R (Identity [Int32]) (DT.Text, Int32, DT.Text)
+--         p = Q.defQueryParams Q.One $ Identity heights
+--     iop <- Q.runClient conn (Q.query qstr p)
+--     if length iop == 0
+--         then return []
+--         else do
+--             case traverse
+--                      (\(hs, ht, hdr) ->
+--                           BlockRecord (fromIntegral ht) (DT.unpack hs) <$> (eitherDecode $ BSL.fromStrict $ DTE.encodeUtf8 hdr))
+--                      (iop) of
+--                 Right x -> return x
+--                 Left err -> do
+--                     liftIO $ print $ "decode failed for blockrecord: " <> show err
+--                     return []
 
 xGetTxHash :: (HasXokenNodeEnv env m, MonadIO m) => Network -> String -> m (Maybe RawTxRecord)
 xGetTxHash net hash = do
@@ -476,27 +505,27 @@ goGetResource msg net = do
                         Just b -> return $ RPCResponse 200 Nothing $ Just $ RespBlockByHash b
                         Nothing -> return $ RPCResponse 404 (Just INVALID_REQUEST) Nothing
                 _____ -> return $ RPCResponse 400 (Just INVALID_PARAMS) Nothing
-        "[HASH]->[BLOCK]" -> do
-            case rqParams msg of
-                Just (GetBlocksByHashes hashes) -> do
-                    blks <- xGetBlocksHashes net hashes
-                    return $ RPCResponse 200 Nothing $ Just $ RespBlocksByHashes blks
-                _____ -> return $ RPCResponse 400 (Just INVALID_PARAMS) Nothing
-        "HEIGHT->BLOCK" -> do
-            case rqParams msg of
-                Just (GetBlockByHeight ht) -> do
-                    blk <- xGetBlockHeight net (fromIntegral ht)
-                    case blk of
-                        Just b -> do
-                            return $ RPCResponse 200 Nothing $ Just $ RespBlockByHash b
-                        Nothing -> return $ RPCResponse 404 (Just INVALID_REQUEST) Nothing
-                _____ -> return $ RPCResponse 400 (Just INVALID_PARAMS) Nothing
-        "[HEIGHT]->[BLOCK]" -> do
-            case rqParams msg of
-                Just (GetBlocksByHeight hts) -> do
-                    blks <- xGetBlocksHeights net $ Data.List.map (fromIntegral) hts
-                    return $ RPCResponse 200 Nothing $ Just $ RespBlocksByHashes blks
-                _____ -> return $ RPCResponse 400 (Just INVALID_PARAMS) Nothing
+        -- "[HASH]->[BLOCK]" -> do
+        --     case rqParams msg of
+        --         Just (GetBlocksByHashes hashes) -> do
+        --             blks <- xGetBlocksHashes net hashes
+        --             return $ RPCResponse 200 Nothing $ Just $ RespBlocksByHashes blks
+        --         _____ -> return $ RPCResponse 400 (Just INVALID_PARAMS) Nothing
+        -- "HEIGHT->BLOCK" -> do
+        --     case rqParams msg of
+        --         Just (GetBlockByHeight ht) -> do
+        --             blk <- xGetBlockHeight net (fromIntegral ht)
+        --             case blk of
+        --                 Just b -> do
+        --                     return $ RPCResponse 200 Nothing $ Just $ RespBlockByHash b
+        --                 Nothing -> return $ RPCResponse 404 (Just INVALID_REQUEST) Nothing
+        --         _____ -> return $ RPCResponse 400 (Just INVALID_PARAMS) Nothing
+        -- "[HEIGHT]->[BLOCK]" -> do
+        --     case rqParams msg of
+        --         Just (GetBlocksByHeight hts) -> do
+        --             blks <- xGetBlocksHeights net $ Data.List.map (fromIntegral) hts
+        --             return $ RPCResponse 200 Nothing $ Just $ RespBlocksByHashes blks
+        --         _____ -> return $ RPCResponse 400 (Just INVALID_PARAMS) Nothing
         "TXID->RAWTX" -> do
             case rqParams msg of
                 Just (GetRawTransactionByTxID hs) -> do
