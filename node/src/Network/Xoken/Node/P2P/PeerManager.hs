@@ -83,6 +83,7 @@ import System.Logger.Message
 import System.Random
 import Xoken.NodeConfig
 import Database.CQL.Protocol
+
 createSocket :: AddrInfo -> IO (Maybe Socket)
 createSocket = createSocketWithOptions []
 
@@ -556,7 +557,8 @@ readNextMessage net sock ingss = do
                     debug lg $
                         msg
                             ("Confirmed-Tx: " ++
-                             (show $ txHashToHex $ txHash t) ++ " unused: " ++ show (B.length unused) )
+                             (show $ txHashToHex $ txHash t) ++ " unused: " ++ show (B.length unused) ++
+                             (show $ issBlockInfo iss) ++ "binTxProcess" ++ (show $ binTxProcessed blin))
                     mqm <- liftIO $ readTVarIO $ merkleQueueMap p2pEnv
                     qe <-
                         case (issBlockInfo iss) of
@@ -564,25 +566,7 @@ readNextMessage net sock ingss = do
                                 if (binTxProcessed blin == 0) -- very first Tx
                                     then do
                                         
-                                        let conn = keyValDB $ dbe
-                                        let str = "update blocks_by_hash set coinbaseTx = ? "
-                                        let qstr = str :: Q.QueryString Q.W ((T.Text, Blob ,((T.Text, Int32), Int32)),T.Text) ()
-                                            par =
-                                             Q.defQueryParams
-                                             Q.One
-                                             ((txHashToHex $ txHash t ,
-                                               Blob $ runPutLazy $ putLazyByteString $ encodeLazy t ,
-                                              ((blockHashToHex $ biBlockHash bf, fromIntegral (binTxProcessed blin ) :: Int32 ),fromIntegral (biBlockHeight bf) :: Int32))
-                                              , blockHashToHex $ biBlockHash bf)
-                                        res <- liftIO $ try $ Q.runClient conn (Q.write (Q.prepared qstr) par)    
-                                       
-                                        case res of
-                                           Right () -> return ()
-                                           Left (e :: SomeException) ->
-                                               err lg $
-                                               LG.msg ("blockhash failed: " ++ show e) >> throw KeyValueDBInsertException
-                                        debug lg $ msg("trangastion " ++ (show t))
-
+                                        liftIO $ debug lg $ msg("first trangastion " ++ (show bf))
                                         qq <-
                                             liftIO $
                                             atomically $ newTBQueue $ intToNatural (maxTMTQueueSize $ nodeConfig p2pEnv)
@@ -596,7 +580,23 @@ readNextMessage net sock ingss = do
                                                 qq
                                                 (biBlockHash $ bf)
                                                 (computeTreeHeight $ binTxTotalCount blin)
-                                        return qq
+                                        let conn = keyValDB $ dbe
+                                            str = "update xoken.blocks_by_hash set coinbasetx = ? where block_hash = ?"
+                                            qstr = str :: Q.QueryString Q.W ((T.Text, Blob ,((T.Text, Int32), Int32)),T.Text) ()
+                                            par =
+                                             Q.defQueryParams
+                                             Q.One
+                                             ((txHashToHex $ txHash t ,
+                                               Blob $ runPutLazy $ putLazyByteString $ encodeLazy t ,
+                                              ((blockHashToHex $ biBlockHash bf, fromIntegral (binTxProcessed blin ) :: Int32 ),fromIntegral (biBlockHeight bf) :: Int32))
+                                              , blockHashToHex $ biBlockHash bf)
+                                        res <- liftIO $ try $  Q.runClient conn (Q.write (Q.prepared qstr) par)    
+                                        debug lg $ msg("trangastion " ++ (show res))
+                                        case res of 
+                                            Right () ->  return qq
+                                            Left (e :: SomeException) -> do
+                                                             liftIO $ print $ "failed to put coinbasetx: " ++ (show e) 
+                                                             return qq                                        
                                     else case M.lookup (biBlockHash $ bf) mqm of
                                              Just q -> return q
                                              Nothing -> throw MerkleQueueNotFoundException
