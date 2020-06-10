@@ -82,7 +82,7 @@ import System.Logger as LG
 import System.Logger.Message
 import System.Random
 import Xoken.NodeConfig
-
+import Database.CQL.Protocol
 createSocket :: AddrInfo -> IO (Maybe Socket)
 createSocket = createSocketWithOptions []
 
@@ -565,13 +565,15 @@ readNextMessage net sock ingss = do
                                     then do
                                         
                                         let conn = keyValDB $ dbe
-                                        let str = "insert INTO xoken.blockmap ( txid, blockhash) values (?,?)"
-                                        let qstr = str :: Q.QueryString Q.W (T.Text,T.Text) ()
-                                        let par =
+                                        let str = "update blocks_by_hash set coinbaseTx = ? "
+                                        let qstr = str :: Q.QueryString Q.W ((T.Text, Blob ,((T.Text, Int32), Int32)),T.Text) ()
+                                            par =
                                              Q.defQueryParams
                                              Q.One
-                                             ( txHashToHex $ txHash t
-                                             ,blockHashToHex $ biBlockHash       $ bf )
+                                             ((txHashToHex $ txHash t ,
+                                               Blob $ runPutLazy $ putLazyByteString $ encodeLazy t ,
+                                              ((blockHashToHex $ biBlockHash bf, fromIntegral (binTxProcessed blin ) :: Int32 ),fromIntegral (biBlockHeight bf) :: Int32))
+                                              , blockHashToHex $ biBlockHash bf)
                                         res <- liftIO $ try $ Q.runClient conn (Q.write (Q.prepared qstr) par)    
                                        
                                         case res of
@@ -579,7 +581,7 @@ readNextMessage net sock ingss = do
                                            Left (e :: SomeException) ->
                                                err lg $
                                                LG.msg ("blockhash failed: " ++ show e) >> throw KeyValueDBInsertException
-
+                                        debug lg $ msg("trangastion " ++ (show t))
 
                                         qq <-
                                             liftIO $
