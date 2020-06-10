@@ -591,12 +591,39 @@ readNextMessage net sock ingss = do
                                               ((blockHashToHex $ biBlockHash bf, fromIntegral (binTxProcessed blin ) :: Int32 ),fromIntegral (biBlockHeight bf) :: Int32))
                                               , blockHashToHex $ biBlockHash bf)
                                         res <- liftIO $ try $  Q.runClient conn (Q.write (Q.prepared qstr) par)    
-                                        debug lg $ msg("trangastion " ++ (show res))
+                                        debug lg $ msg("coinebasetx blocks_hash " ++ (show res))
+
+
+
                                         case res of 
                                             Right () ->  return qq
                                             Left (e :: SomeException) -> do
                                                              liftIO $ print $ "failed to put coinbasetx: " ++ (show e) 
-                                                             return qq                                        
+                                                             return qq  
+                                        
+                                        let str1 = "update xoken.blocks_by_height set coinbasetx = ? where block_height = ?"
+                                            qstr1 = str1 :: Q.QueryString Q.W ((T.Text, Blob ,((T.Text, Int32), Int32)),Int32) ()
+                                            par1 =
+                                                 Q.defQueryParams
+                                                 Q.One
+                                                 ((txHashToHex $ txHash t ,
+                                                   Blob $ runPutLazy $ putLazyByteString $ encodeLazy t ,
+                                                  ((blockHashToHex $ biBlockHash bf, fromIntegral (binTxProcessed blin ) :: Int32 ),fromIntegral (biBlockHeight bf) :: Int32))
+                                                  , fromIntegral (biBlockHeight bf) :: Int32)
+
+                                        res1 <- liftIO $ try $  Q.runClient conn (Q.write (Q.prepared qstr1) par1)    
+                                        debug lg $ msg("coinebasetx blocks_height " ++ (show res1))
+
+
+
+                                        case res1 of 
+                                            Right () ->  return qq
+                                            Left (e :: SomeException) -> do
+                                                             liftIO $ print $ "failed to put coinbasetx: " ++ (show e) 
+                                                             return qq  
+                                       
+
+
                                     else case M.lookup (biBlockHash $ bf) mqm of
                                              Just q -> return q
                                              Nothing -> throw MerkleQueueNotFoundException
